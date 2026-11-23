@@ -28,9 +28,10 @@ WORKDIR /build
 # ── Cache layer: copy manifests first so cargo fetch is only re-run on
 #    Cargo.toml / Cargo.lock changes, not on every source edit ──────────────────
 COPY contracts/escrow/Cargo.toml contracts/escrow/Cargo.lock ./contracts/escrow/
+COPY contracts/agent_policy/Cargo.toml ./contracts/agent_policy/
 
 # Create a stub lib.rs so `cargo build` can resolve the crate without full source
-RUN mkdir -p contracts/escrow/src && \
+RUN mkdir -p contracts/escrow/src contracts/agent_policy/src && \
     echo '#![no_std] soroban_sdk::contractimpl!(struct S;);' > contracts/escrow/src/lib.rs || \
     printf '#![no_std]\n' > contracts/escrow/src/lib.rs
 
@@ -41,6 +42,8 @@ RUN cargo fetch --locked --manifest-path contracts/escrow/Cargo.toml
 
 # ── Full source copy + release build ──────────────────────────────────────────
 COPY contracts/escrow/src ./contracts/escrow/src
+COPY contracts/agent_policy/src ./contracts/agent_policy/src
+RUN cargo build --manifest-path contracts/agent_policy/Cargo.toml --target wasm32-unknown-unknown --release
 
 RUN cargo build \
         --locked \
@@ -147,6 +150,9 @@ COPY --from=node-builder /build/dist ./dist
 COPY --from=rust-builder \
     /build/contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
     ./contracts/escrow/stellar_payfi_escrow.wasm
+COPY --from=rust-builder \
+    /build/contracts/agent_policy/target/wasm32-unknown-unknown/release/stellar_agent_policy.wasm \
+    ./contracts/agent_policy/stellar_agent_policy.wasm
 
 # Ensure compiled output is readable by the non-root user
 RUN chown -R agent:agent /app

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../backend/config', () => ({
-  config: { NANO_RPC_URL: 'http://127.0.0.1:7076' },
+  config: {
+    NANO_RPC_URL: 'http://127.0.0.1:7076',
+    NANO_ALLOW_SKIP_PRECHECK: true,
+    STELLAR_NETWORK: 'testnet',
+  },
   getNanoSeed: () => undefined,
 }));
 

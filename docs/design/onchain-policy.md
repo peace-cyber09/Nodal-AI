@@ -186,3 +186,30 @@ with the agent key (an `authorizeEntry` callback that produces the
 3. Production: replace the prototype with an OpenZeppelin smart account
    (agent signer scoped by a context rule + Spending Limit policy) after the
    SDK/toolchain upgrade, and get it audited.
+
+## Backend integration
+
+Set `AGENT_POLICY_ACCOUNT` to the deployed `C…` policy account. The backend keeps the
+configured `G…` agent key as the transaction fee payer, while `PolicyAccountSigner`
+authorizes the Soroban authorization entries for the policy account with the same
+Ed25519 key. Soroban invocations are simulated first; assembled authorization
+entries are signed only after simulation and before submission.
+
+The policy account is the source of SAC transfers from the contract invocation.
+`SorobanInvokeTool` therefore attributes simulated outgoing SAC events to the
+configured policy account, and the existing off-chain spending tracker continues
+to reserve and record the same spend. Startup reads `get_policy` and refuses to
+start when `AGENT_SPENDING_LIMIT` is higher than the on-chain `limit`. `GET
+/spending` exposes an `onChain` object containing the current `spent`, `limit`,
+window length, and window start when policy integration is enabled.
+
+## Non-token call allowlist
+
+Token value calls remain restricted to the configured SAC and the spending limit.
+Every non-token contract call must match an owner-managed `(contract, fn_name)`
+pair. Owners can replace the complete list with `set_allowlist`, add a pair with
+`allow`, remove one with `disallow`, and inspect it with `get_allowlist`. The
+contract emits `allowlist_set`, `allowlist_added`, and `allowlist_removed` events.
+The public `bump` method extends instance storage TTL without changing policy.
+Initialization, policy updates, allowlist changes, and successful agent
+authorization checks extend the instance TTL automatically.

@@ -12,10 +12,10 @@
  *   - Request bodies are limited to MCP_MAX_BODY_BYTES (default 1 MiB).
  */
 
-import { PayFiAgent, VALUE_MOVING_TASK_TYPES } from '../agent';
+import { PayFiAgent } from '../agent';
 import { config } from '../config';
 import { createLogger } from '../utils/logger';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 
 const log = createLogger('mcp');
 
@@ -83,6 +83,7 @@ function getMCPTools(agent: PayFiAgent): MCPTool[] {
  *                       MCP_FORCE_DIRECT_PAYMENTS=true.
  */
 function getPaymentMode(): 'approve' | 'direct' {
+  // eslint-disable-next-line no-restricted-properties
   return process.env.MCP_PAYMENT_MODE === 'direct' ? 'direct' : 'approve';
 }
 
@@ -97,10 +98,7 @@ function toolToMCPSchema(tool: MCPTool): object {
 /**
  * Handle MCP request and return response.
  */
-export async function handleRequest(
-  agent: PayFiAgent,
-  request: MCPRequest
-): Promise<MCPResponse> {
+export async function handleRequest(agent: PayFiAgent, request: MCPRequest): Promise<MCPResponse> {
   const { id } = request;
 
   try {
@@ -225,7 +223,7 @@ function tokensMatch(given: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-export function startMCPHTTPServer(agent: PayFiAgent, port = 3001): void {
+export function startMCPHTTPServer(agent: PayFiAgent, port = 3001): Server {
   const allowPayments = config.MCP_ALLOW_PAYMENTS;
   const apiToken = config.MCP_API_TOKEN;
   const host = config.MCP_HOST;
@@ -282,7 +280,7 @@ export function startMCPHTTPServer(agent: PayFiAgent, port = 3001): void {
   });
 
   // ── Bind ───────────────────────────────────────────────────────────────────
-  app.listen(port, host, () =>
+  return app.listen(port, host, () =>
     log.info({ host, port, authenticated: !!apiToken }, 'MCP HTTP server started')
   );
 }

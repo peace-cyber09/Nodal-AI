@@ -15,6 +15,8 @@
  *   - `repeated_failures`  — N consecutive task failures within a time window.
  *     Fires once per streak; a successful task re-arms it.
  *   - `breaker_open`       — an RPC circuit breaker tripped open.
+ *   - `channel_expired`    — an MPP payment channel reached its timeout and
+ *     was swept to `Expired`, releasing its spending reservation.
  *
  * Configuration (all optional, read from the environment):
  *   ALERT_WEBHOOK_URL           generic JSON webhook receiving the raw event
@@ -39,7 +41,11 @@ const log = createLogger('alerts');
 
 // ─── Event model ──────────────────────────────────────────────────────────────
 
-export type AlertType = 'spending_threshold' | 'repeated_failures' | 'breaker_open';
+export type AlertType =
+  | 'spending_threshold'
+  | 'repeated_failures'
+  | 'breaker_open'
+  | 'channel_expired';
 export type AlertSeverity = 'warning' | 'critical';
 
 export interface AlertEvent {

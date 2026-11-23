@@ -83,6 +83,43 @@ jobs:
       - run: npm ci
       - run: npm run test:all
 
+  # Exercises the Postgres Storage backend (#822) against a real database, so
+  # a SQL dialect bug (e.g. a migration that only works on SQLite) fails CI
+  # instead of surfacing in production. tests/storage.test.ts parameterises
+  # its suite over Postgres whenever TEST_DATABASE_URL is set; without it,
+  # that job only ever ran the SQLite half.
+  test-postgres:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nodal
+          POSTGRES_PASSWORD: nodal
+          POSTGRES_DB: nodal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nodal -d nodal"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      TEST_DATABASE_URL: postgres://nodal:nodal@localhost:5432/nodal
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx vitest run tests/storage.test.ts tests/db_migrations.test.ts tests/persistence.test.ts
+
   test-rust:
     runs-on: ubuntu-latest
 
@@ -341,6 +378,48 @@ jobs:
       - run: npm ci
       - name: Audit npm dependencies
         run: npm audit --audit-level=high
+
+  # Rust-side counterpart to audit-npm (#991): npm dependencies were already
+  # audited in CI, but advisories in soroban-sdk's dependency tree, or a
+  # yanked crate, went unnoticed on the Rust side. Runs against both
+  # contracts' own Cargo.lock. License policy is documented in deny.toml;
+  # known, currently-unfixable transitive advisories (pinned by
+  # rust-toolchain.toml, see that file's comment) are ignored there and in
+  # .cargo/audit.toml — anything not already listed still fails the job.
+  audit-rust:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_AUDIT_VERSION: 0.22.2
+      CARGO_DENY_VERSION: 0.20.2
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Prebuilt release binaries: compiling cargo-audit/cargo-deny from
+      # source on every run is minutes of CI for a tool this job just
+      # invokes, and (see test-rust's "Install Rust" step) this repo's
+      # pinned 1.78 toolchain is older than some of their dependencies need.
+      - name: Install cargo-audit
+        run: |
+          curl -sSfL "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v${CARGO_AUDIT_VERSION}/cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}.tgz" \
+            | tar -xz -C /usr/local/bin --strip-components=1 "cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}/cargo-audit"
+
+      - name: Install cargo-deny
+        run: |
+          curl -sSfL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /usr/local/bin --strip-components=1 "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
+
+      - name: cargo audit — escrow
+        run: cargo audit --file contracts/escrow/Cargo.lock
+
+      - name: cargo audit — agent_policy
+        run: cargo audit --file contracts/agent_policy/Cargo.lock
+
+      - name: cargo deny — escrow
+        run: cargo deny --manifest-path contracts/escrow/Cargo.toml --config deny.toml check advisories bans licenses
+
+      - name: cargo deny — agent_policy
+        run: cargo deny --manifest-path contracts/agent_policy/Cargo.toml --config deny.toml check advisories bans licenses
 
   docs-link-check:
     runs-on: ubuntu-latest

@@ -72,7 +72,7 @@ export type { AuditEntry, PendingApproval } from './persistence';
 
 // ─── Spending tracker ─────────────────────────────────────────────────────────
 
-export { assetKey } from './spending_tracker';
+export { assetKey, assetKeyForPaymentAsset } from './spending_tracker';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 

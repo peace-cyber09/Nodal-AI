@@ -89,3 +89,23 @@ describe('TaskType documentation stays in sync with the registry', () => {
     expect(sorted(templateTaskTypes())).toEqual(sorted(registry));
   });
 });
+
+describe('.env.example parity with EnvSchema', () => {
+  it('every non-derived schema key appears in .env.example', () => {
+    const configSrc = read('backend/config.ts');
+    const envSrc = read('.env.example');
+
+    const schemaBlockMatch = configSrc.match(/export const EnvSchema = z\.object\(\{([\s\S]*?)\}\);/);
+    expect(schemaBlockMatch).toBeTruthy();
+    const schemaBlock = schemaBlockMatch![1]!;
+
+    const schemaKeys = [...schemaBlock.matchAll(/^\s*([A-Z0-9_]+)\s*:/gm)].map((m) => m[1]!);
+    expect(schemaKeys.length).toBeGreaterThan(50);
+
+    const envKeys = new Set([...envSrc.matchAll(/^[#\s]*([A-Z0-9_]+)=/gm)].map((m) => m[1]!));
+
+    for (const key of schemaKeys) {
+      expect(envKeys.has(key)).toBe(true);
+    }
+  });
+});

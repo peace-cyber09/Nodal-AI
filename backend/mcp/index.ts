@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-restricted-properties */
 /**
  * backend/mcp/server.ts - Add npx nodal-ai mcp command entry
  *

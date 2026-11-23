@@ -175,12 +175,22 @@ docker-compose --profile test-only up --build --abort-on-container-exit --exit-c
 
 State (spending window, x402 nonces, audit log, agent results) lives in SQLite at `DB_PATH` by default, which suits a single instance. To run several instances against one shared store, set `STORAGE_BACKEND=postgres` and `DATABASE_URL`. The `postgres` profile starts Postgres, a Postgres-backed agent on port 3001 and the shared storage test suite:
 
+The shared SQLite connection sets `journal_mode=WAL`, `busy_timeout=5000` and `foreign_keys=ON` on open (#962), so the health server, SSE polling and the agent contending for the same database file retry instead of failing with `SQLITE_BUSY` under load.
+
 ```bash
 docker compose --profile postgres up --build agent-postgres
 docker compose --profile postgres run --rm test-runner-postgres
 ```
 
 Schema changes are numbered SQL files in [`backend/db/migrations/`](./backend/db/migrations/) (`postgres/` holds the Postgres equivalents). Pending files are applied at startup inside a transaction and recorded in `schema_version`. To change the schema, add the next `NNN_<name>.sql` for both backends. Never edit a migration that has already shipped.
+
+### Data Retention (#963)
+
+`agent_results`, decided/expired `pending_approvals` and `trigger_events` dedupe rows grow without bound for a long-running agent. A daily job (`backend/retention.ts`, interval set by `RETENTION_JOB_INTERVAL_MS`) deletes rows older than `RETENTION_DAYS_RESULTS`, `RETENTION_DAYS_APPROVALS` and `RETENTION_DAYS_TRIGGER_EVENTS` respectively (all default to 30 days), and opportunistically prunes expired idempotency keys and x402 rate-limit records past their own windows. The hash-chained `audit_log` is never touched — pruning it would break the chain. Run the same sweep on demand, or from an external cron instead of in-process, with:
+
+```bash
+npm run db:prune
+```
 
 ### Visual Dashboard
 
@@ -350,12 +360,28 @@ Operators can freeze fund movement during an incident without stopping the proce
 
 - `POST /admin/pause` and `POST /admin/resume` on the health server toggle it. Both require `Authorization: Bearer <WEBHOOK_SECRET>` and return `401` when `WEBHOOK_SECRET` is not configured.
 - `PAUSED=true` starts the agent paused.
-- The paused state is stored in the agent database (`DB_PATH`), so a paused agent stays paused across restarts until resumed.
+- The paused state is stored in the shared storage backend (SQLite or Postgres, whichever `STORAGE_BACKEND` selects), so a paused agent stays paused across restarts until resumed.
+- **Multi-instance sync (#960):** with several instances sharing one store, pausing/resuming one is picked up by the others within `KILL_SWITCH_SYNC_INTERVAL_MS` (default 2s) — each instance polls the shared state on that interval. The instance that issues the pause/resume takes effect immediately for itself.
 - While paused, every task that signs and submits a transaction (`VALUE_MOVING_TASK_TYPES` in `backend/agent.ts`) fails with `errorType: "AGENT_PAUSED"`.
 - Each pause/resume sends a webhook event: `{ "event": "agent.paused" | "agent.resumed", "paused": boolean, "reason"?: string, "timestamp": string }`.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
+```
+
+### Human-in-the-Loop Approvals
+
+Value-moving tasks above a configured amount are held as `pending_approval` instead of executing immediately, until an operator decides via `POST /approvals/:id`.
+
+- `APPROVAL_THRESHOLD` sets a single global amount. `APPROVAL_THRESHOLDS` (#953) sets per-asset amounts instead — comma-separated `'CODE:THRESHOLD'` (XLM/native) or `'CODE:ISSUER:THRESHOLD'` (credit assets), e.g. `XLM:5000,USDC:GA5Z…:500` — with `APPROVAL_THRESHOLD` as the fallback for any asset not listed. Comparisons are exact BigInt stroops, never a float parse, so two different assets' amounts are never pooled into one number.
+- `GET /approvals` lists pending approvals; `POST /approvals/:id { "decision": "approve" | "deny" }` decides one.
+- **Named approvers (#954):** `APPROVER_TOKENS='name:sha256hex,...'` gives each approver their own credential — distinct from `ADMIN_API_TOKEN` — so the token that submits tasks doesn't have to be the one that approves them. The decision is recorded as `decidedBy` (the matched name, or `"admin"` for the shared token) on the approval and in the audit log. Compute a token's hash with e.g. `printf '%s' 'the-raw-token' | sha256sum`.
+- **2-of-N consensus (#954):** above `APPROVAL_MULTI_APPROVER_THRESHOLD`, `"approve"` records a vote instead of deciding; the task only executes once `APPROVAL_MIN_APPROVERS` (default 2) *distinct* approvers have voted. `GET /approvals` shows each pending approval's `votes` so far. A single approver may still `"deny"` at any time — consensus is required to move money, not to block it.
+
+```bash
+curl -H "Authorization: Bearer $APPROVER_TOKEN" http://localhost:3000/approvals
+curl -X POST -H "Authorization: Bearer $APPROVER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"decision":"approve"}' http://localhost:3000/approvals/<id>
 ```
 
 ### Prometheus Metrics
@@ -734,6 +760,7 @@ Each value below is a `BuiltinTaskType` wired into `PayFiAgent.run()` in `backen
 | `offer_book` | `OfferBookTool` | Query the Stellar DEX order book for an asset pair and return bids, asks, and the top-of-book spread. Read-only. |
 | `cross_border_payment` | `CrossBorderPaymentTool` | SEP-31 payment as the sending anchor: SEP-12 KYC for sender and receiver, optional SEP-38 firm quote, SEP-31 transaction, then the on-chain payment with the anchor's memo. Spending limit enforced. |
 | `soroban_storage` | `SorobanStorageTool` | Read a Soroban contract's storage entry (`persistent`, `temporary`, or `instance`) and return the decoded value. Read-only. |
+| `claimable_balance` | `ClaimableBalanceTool` | Create a Stellar claimable balance for one or more claimants, or claim one the agent is entitled to. Spending limit enforced on create. |
 
 > **Standalone use:** read-only tools such as `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) can also be imported and used directly, outside the agent task loop, when you only need a query.
 
@@ -763,6 +790,7 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `network_status`: no payload fields (pass `{}`)
 - `offer_book`: `{ sellingAsset: string | { code: string; issuer?: string }; buyingAsset: string | { code: string; issuer?: string }; limit?: number }` (string assets are `"XLM"`, `"native"` or `"CODE:ISSUER"`; `limit` is 1–200)
 - `soroban_storage`: `{ contractId: string; keys: unknown[]; durability?: "persistent" | "temporary" | "instance" }` (exactly one key; `durability` defaults to `"persistent"`)
+- `claimable_balance`: `{ action: "create"; assetCode: string; assetIssuer?: string; amount: string; claimants: { destination: string; predicate?: ClaimPredicate }[] } | { action: "claim"; balanceId: string }` (spending limit enforced on `create`; `claim` verifies the agent is a listed claimant before submitting)
 - `swap`: `{ sellAsset: { code: string; issuer?: string }; buyAsset: { code: string; issuer?: string }; sellAmount: string; maxSlippagePct: number }` (`maxSlippagePct` is 0–100)
 - `account_history`: `{ publicKey?: string; limit?: number; cursor?: string; assetCode?: string }` (`limit` is 1–200, default 10, and counts *matching* payments after non-`payment` operations and the `assetCode` filter are dropped; the tool pages through Horizon to fill it, up to 5 pages per call. The result adds `pagesFetched` and `pageLimitReached` — when `pageLimitReached` is true, fewer than `limit` records does not mean history is exhausted; continue from `nextCursor`)
 - `soroban_deploy`: `{ action: "upload" | "deploy"; wasm?: Buffer | string; wasmBuffer?: Buffer | string }` or `{ action: "instantiate"; wasmHash: string }` — `upload`/`deploy` require WASM bytes (a `Buffer`, file path, hex or base64 string)

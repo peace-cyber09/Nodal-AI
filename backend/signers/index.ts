@@ -13,6 +13,7 @@ export type { Signer, SignerBackend } from './Signer';
 export { signTransaction } from './Signer';
 export { LocalSigner } from './LocalSigner';
 export { VaultTransitSigner } from './VaultTransitSigner';
+export { PolicyAccountSigner } from '../signer';
 
 /**
  * Build the signer configured by `SIGNER_BACKEND`.
